@@ -1,0 +1,238 @@
+#!/bin/bash
+#
+# ~/.bashrc
+#   source _gwt
+#   alias gwt=_gwt_main
+#   complete -F _gwt_completion gwt
+#
+# ~/.config/gwt/default.profile (example)
+#   _gwt_vars[RELTO]=$HOME/code
+#   _gwt_vars[REMOTE]=git@github.com:$USER/reponame
+#   _gwt_vars[REPO]=$HOME/code/.reponame
+#   _gwt_vars[DEFAULT_BRANCH]=main
+#
+# CUSTOM columns can be appended to the table (example)
+#   _gwt_vars[CUSTOM]='[[ -d $WORKSPACE/build ]] && echo 📦'
+#
+declare -A _gwt_vars
+_gwt_vars[CONFDIR]=${XDG_CONFIG_HOME:-$HOME/.config}/gwt
+_GWT_PROFILE=${_GWT_PROFILE:-default}
+_gwt_vars[PROFILE_LOADED]=
+
+_gwt_error() {
+    echo "(gwt) Error: $*" >&2
+}
+
+_gwt_usage() {
+    echo "Usage: $(basename "$0") <COMMAND> <COMMAND_OPTIONS> [...]"
+    echo ""
+    echo "Commands:"
+    echo "  cd WT                     change to worktree's directory"
+    echo "  exec WT CMD...            run command inside worktree (alias: x)"
+    echo "  init                      initialize gwt for the current profile"
+    echo "  list [-t]                 list worktrees for the current profile (alias: ls)"
+    echo "  move WT_SRC WT_DST        rename worktree (alias: mv)"
+    echo "  new NAME [BRANCH]         create worktree from BRANCH (default: ${_gwt_vars[DEFAULT_BRANCH]})"
+    echo "  profile PROFILE           change profile (alias: p)"
+    echo "  remove WT [WT...] [-f]    remove worktree(s) (alias: mv)"
+    echo ""
+}
+
+# helpers
+
+_gwt_git() {
+    git -C "${_gwt_vars[REPO]}" "$@"
+}
+
+_gwt_expand_path() {
+    local worktree=$1
+
+    # assume relative to the profile's worktree directory unless absolute path provided
+    if [[ ! "$worktree" =~ ^/ ]]; then
+        worktree=${_gwt_vars[RELTO]}/$worktree
+    fi
+
+    echo "$worktree"
+}
+
+_gwt_list_fmt_line() {
+    if [[ -n "$ZSH_VERSION" ]]; then
+        emulate -L sh
+    fi
+    local line
+    while read -r line; do
+        # shellcheck disable=SC2086
+        set -- $line
+        local path_=$1
+        local sha=$2
+        local branch=$3
+        local date
+        date=$(git -C "$path_" log -1 --format="%aI")
+        custom=$(WORKSPACE=$path_ /bin/bash -c "${_gwt_vars[CUSTOM]:-/bin/true}")
+        echo "$(realpath --relative-to "${_gwt_vars[RELTO]}" "$path_") $sha $branch${date:+ $date}${custom:+ $custom}"
+    done
+}
+
+# commands
+
+_gwt_cd() {
+    local worktree
+    worktree=$(_gwt_expand_path "$1")
+    cd "$worktree" || return $?
+}
+
+_gwt_exec() {
+    local worktree
+    worktree=$(_gwt_expand_path "$1")
+    shift
+    (cd "$worktree" && "$@")
+}
+
+_gwt_init() {
+    if [[ -e "${_gwt_vars[REPO]}" ]]; then
+        _gwt_error "${_gwt_vars[REPO]} already initialized on this machine"
+        return 1
+    fi
+    mkdir -p "${_gwt_vars[REPO]}"
+    _gwt_git init --bare
+    _gwt_git remote add origin "${_gwt_vars[REMOTE]}"
+    # fetch tags once to get an accurate refpoint
+    _gwt_git fetch --tags origin "${_gwt_vars[DEFAULT_BRANCH]}"
+}
+
+_gwt_list() {
+    sort=(cat)  # default "git worktree list" ordering
+    [[ "$1" == "-t" ]] && sort=(sort -r -k4)  # use default -lt ordering, newest first
+    _gwt_git worktree list | grep -v "${_gwt_vars[REPO]}" | _gwt_list_fmt_line | column -t | "${sort[@]}"
+}
+
+_gwt_move() {
+    _gwt_git worktree move "$(_gwt_expand_path "$1")" "$(_gwt_expand_path "$2")"
+}
+
+_gwt_new() {
+    local worktree
+    worktree=$(_gwt_expand_path "$1")
+    local base_branch=$2
+
+    local fetch_opts=(origin "${_gwt_vars[DEFAULT_BRANCH]}")
+    [[ -n "$base_branch" ]] && fetch_opts+=("$base_branch")
+    _gwt_git fetch "${fetch_opts[@]}"
+    mkdir -p "$(dirname "$worktree")"
+    _gwt_git worktree add --track \
+        -B "${base_branch:-$(basename "$worktree")}" \
+        "$worktree" \
+        "origin/${base_branch:-${_gwt_vars[DEFAULT_BRANCH]}}" \
+        || return $?
+    _gwt_cd "$worktree"
+}
+
+_gwt_use_profile() {
+    local profile=$1
+
+    local profile_config=${_gwt_vars[CONFDIR]}/$profile.profile
+    if [[ ! -r "$profile_config" ]]; then
+        _gwt_error "Profile config does not exist: $profile_config"
+        return 1
+    fi
+
+    local needed_configs=(RELTO REMOTE REPO DEFAULT_BRANCH)
+    local optional_configs=(CUSTOM)
+    local config
+
+    for config in "${needed_configs[@]}" "${optional_configs[@]}"; do
+        _gwt_vars[$config]=
+    done
+
+    # shellcheck disable=SC1090
+    source "$profile_config"
+
+    for config in "${needed_configs[@]}"; do
+        if [[ ! ${_gwt_vars[$config]} ]]; then
+            _gwt_error "Missing _gwt_vars[$config] in $profile_config"
+            return 1
+        fi
+    done
+
+    _gwt_vars[PROFILE_LOADED]=$profile_config
+    export _GWT_PROFILE=$profile
+}
+
+
+_gwt_rm() {
+    local opt
+    local opts=()
+    local wt
+    local wts=()
+    for opt in "$@"; do
+        [[ $opt =~ ^- ]] && opts+=("$opt") && continue
+        wts+=("$opt")
+    done
+    for wt in "${wts[@]}"; do
+        _gwt_git worktree remove "${opts[@]}" "$(_gwt_expand_path "$wt")" || return $?
+    done
+}
+
+# completion
+
+_gwt_completion__worktrees() {
+    # shellcheck disable=SC2207
+    COMPREPLY=( $(compgen -W "$(_gwt_list | awk '{ print $1 }')" -- "$cur") )
+}
+
+_gwt_completion() {
+  local cur=${COMP_WORDS[COMP_CWORD]}
+  local prev=${COMP_WORDS[COMP_CWORD-1]}
+  local cmd=${COMP_WORDS[1]}
+
+  case "$prev" in
+      gwt|_gwt_main)
+          # shellcheck disable=SC2207
+          COMPREPLY=( $(compgen -W "cd init new list ls move mv profile remove rm" -- "$cur") )
+          return
+          ;;
+      cd|x|exec|move|mv|remove|rm)
+          _gwt_completion__worktrees
+          return
+          ;;
+  esac
+
+  # commands that support multiple options
+  case "$cmd" in
+      remove|rm)
+          _gwt_completion__worktrees
+          ;;
+  esac
+}
+
+# main
+
+_gwt_use_profile "${_GWT_PROFILE}"
+
+_gwt_main() {
+    local cmd=$1
+    shift
+
+    if [[ $cmd != profile && ! ${_gwt_vars[PROFILE_LOADED]} ]]; then
+        _gwt_error 'Profile missing, run "gwt profile [PROFILE]"'
+        return 1
+    fi
+
+    if [[ ! $cmd =~ ^(init|profile|p)$ && ! -e "${_gwt_vars[REPO]}" ]]; then
+        _gwt_error 'Not initialized, run "gwt init"'
+        return 1
+    fi
+
+    case "$cmd" in
+        -h|--help) _gwt_usage;                                            return 0 ;;
+        cd)        _gwt_cd "$@"                                                    ;;
+        exec|x)    _gwt_exec "$@"                                                  ;;
+        init)      _gwt_init "$@"                                                  ;;
+        new)       _gwt_new "$@"                                                   ;;
+        list|ls)   _gwt_list "$@"                                                  ;;
+        move|mv)   _gwt_move "$@"                                                  ;;
+        profile|p) _gwt_use_profile "$@"                                           ;;
+        remove|rm) _gwt_rm "$@"                                                    ;;
+        *)         _gwt_usage >&2; _gwt_error "Unexpected command: $cmd"; return 1 ;;
+    esac
+}

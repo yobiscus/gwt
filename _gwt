@@ -164,13 +164,27 @@ _gwt_rm() {
     local opts=()
     local wt
     local wts=()
+    local exit_terminal=
+    local rc=0
+
     for opt in "$@"; do
         [[ $opt =~ ^- ]] && opts+=("$opt") && continue
         wts+=("$opt")
     done
+
     for wt in "${wts[@]}"; do
-        _gwt_git worktree remove "${opts[@]}" "$(_gwt_expand_path "$wt")" || return $?
+        if [[ "$wt" == . ]]; then
+            # find current worktree
+            wt=$(git rev-parse --show-toplevel) || return $?
+            # instead of leaving the terminal inside an unlinked path, we will
+            # exit the terminal after a successful remove
+            exit_terminal=1
+        fi
+        _gwt_git worktree remove "${opts[@]}" "$(_gwt_expand_path "$wt")" || rc=$?
     done
+
+    [[ $rc != 0 ]] && return $rc
+    [[ $exit_terminal ]] && exit 0
 }
 
 # completion

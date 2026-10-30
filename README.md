@@ -17,6 +17,7 @@ under a directory you choose. After that, `gwt new`, `gwt cd`, `gwt ls`, and
 - Jump into a worktree by name.
 - Run a command inside a worktree without changing your current shell directory.
 - List worktrees with branch, commit, and last-commit date.
+- Add worktree notes, displayed before the last-commit date.
 - Sort worktrees by latest commit date with `gwt list -t`.
 - Rename and remove worktrees through Git's worktree commands.
 - Bash completion for commands and known worktree names.
@@ -114,6 +115,7 @@ gwt x WT CMD...
 gwt list
 gwt ls
 gwt list -t
+gwt note WT "NOTE"
 gwt move WT_SRC WT_DST
 gwt mv WT_SRC WT_DST
 gwt remove WT [WT...] [-f]
@@ -161,6 +163,15 @@ List worktrees with the most recently committed work first:
 ```bash
 gwt ls -t
 ```
+
+Add or replace a worktree note:
+
+```bash
+gwt note auth-refresh "Waiting for review"
+```
+
+Notes appear before the timestamp in `gwt ls` and stay with a worktree when
+it is renamed. Clear a note with `gwt note auth-refresh ""`.
 
 Rename a worktree:
 

@@ -33,6 +33,7 @@ _gwt_usage() {
     echo "  list [-t]                 list worktrees for the current profile (alias: ls)"
     echo "  move WT_SRC WT_DST        rename worktree (alias: mv)"
     echo "  new NAME [BRANCH]         create worktree from BRANCH (default: ${_gwt_vars[DEFAULT_BRANCH]})"
+    echo "  note WT NOTE              set a worktree note (empty string clears it)"
     echo "  profile PROFILE           change profile (alias: p)"
     echo "  remove WT [WT...] [-f]    remove worktree(s) (alias: mv)"
     echo ""
@@ -68,8 +69,14 @@ _gwt_list_fmt_line() {
         local branch=$3
         local date
         date=$(git -C "$path_" log -1 --format="%aI")
+        local git_dir note=
+        git_dir=$(git -C "$path_" rev-parse --absolute-git-dir)
+        [[ -f "$git_dir/gwt-note" ]] && note=$(<"$git_dir/gwt-note")
+        note=${note//[$'\t\r\n']/ }
         custom=$(WORKSPACE=$path_ /bin/bash -c "${_gwt_vars[CUSTOM]:-/bin/true}")
-        echo "$(realpath --relative-to "${_gwt_vars[RELTO]}" "$path_") $sha $branch${date:+ $date}${custom:+ $custom}"
+        printf '%s\t%s\t%s\t%s\t%s%s\n' \
+            "$(realpath --relative-to "${_gwt_vars[RELTO]}" "$path_")" \
+            "$sha" "$branch" "$note" "$date" "${custom:+$'\t'$custom}"
     done
 }
 
@@ -102,8 +109,8 @@ _gwt_init() {
 
 _gwt_list() {
     sort=(cat)  # default "git worktree list" ordering
-    [[ "$1" == "-t" ]] && sort=(sort -r -k4)  # use default -lt ordering, newest first
-    _gwt_git worktree list | grep -v "${_gwt_vars[REPO]}" | _gwt_list_fmt_line | column -t | "${sort[@]}"
+    [[ "$1" == "-t" ]] && sort=(sort -t $'\t' -r '-k5,5')  # newest first
+    _gwt_git worktree list | grep -v "${_gwt_vars[REPO]}" | _gwt_list_fmt_line | "${sort[@]}" | column -t -s $'\t'
 }
 
 _gwt_move() {
@@ -125,6 +132,17 @@ _gwt_new() {
         "origin/${base_branch:-${_gwt_vars[DEFAULT_BRANCH]}}" \
         || return $?
     _gwt_cd "$worktree"
+}
+
+_gwt_note() {
+    if [[ $# -ne 2 ]]; then
+        _gwt_error 'Usage: gwt note WT "NOTE"'
+        return 1
+    fi
+
+    local git_dir
+    git_dir=$(git -C "$(_gwt_expand_path "$1")" rev-parse --absolute-git-dir) || return $?
+    printf '%s\n' "$2" > "$git_dir/gwt-note"
 }
 
 _gwt_use_profile() {
@@ -202,10 +220,10 @@ _gwt_completion() {
   case "$prev" in
       gwt|_gwt_main)
           # shellcheck disable=SC2207
-          COMPREPLY=( $(compgen -W "cd init new list ls move mv profile remove rm" -- "$cur") )
+          COMPREPLY=( $(compgen -W "cd init new note list ls move mv profile remove rm" -- "$cur") )
           return
           ;;
-      cd|x|exec|move|mv|remove|rm)
+      cd|x|exec|move|mv|note|remove|rm)
           _gwt_completion__worktrees
           return
           ;;
@@ -243,6 +261,7 @@ _gwt_main() {
         exec|x)    _gwt_exec "$@"                                                  ;;
         init)      _gwt_init "$@"                                                  ;;
         new)       _gwt_new "$@"                                                   ;;
+        note)      _gwt_note "$@"                                                  ;;
         list|ls)   _gwt_list "$@"                                                  ;;
         move|mv)   _gwt_move "$@"                                                  ;;
         profile|p) _gwt_use_profile "$@"                                           ;;
